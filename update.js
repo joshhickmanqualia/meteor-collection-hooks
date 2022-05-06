@@ -41,14 +41,40 @@ CollectionHooks.defineAdvice('update', function (userId, _super, instance, aspec
       }
 
       // before
+      let mutators = new Map();
       aspects.before.forEach(function (o) {
         docs.forEach(function (doc) {
-          const r = o.aspect.call({ transform: getTransform(doc), ...ctx }, userId, doc, fields, mutator, options)
+          let localMutator = EJSON.clone(mutator)
+          // We need to stop returning false on noop updates, or make this just ignore those
+          const r = o.aspect.call({ transform: getTransform(doc), ...ctx }, userId, doc, fields, localMutator, options)
+          let recordsForThisMutator = mutators.get(localMutator) || []
+          recordsForThisMutator.push(doc)
+          mutators.set(localMutator, recordsForThisMutator)
           if (r === false) abort = true
         })
       })
 
       if (abort) return 0
+      if (mutators.size > 1) {
+        for (const [mutator, docsThatNeedIt] in mutators) {
+          instance.update({_id: {$in: docsThatNeedIt.map(doc => doc._id)}}, mutator)
+        }
+
+        return 0; // we need to cancel the underlying op, it will NEVER work with multiple intended mutators.
+      } else if (mutators.size === 1) {
+        // modify the mutator object to be the one returned.
+        for (let field in mutator) {
+          if (mutator.hasOwnProperty(field)) {
+            delete mutator[field]
+          }
+        }
+        let newMutator = mutators.keys()[0]
+        for (let newMutField in newMutator) {
+          if (newMutator.hasOwnProperty(newMutField)) {
+            mutator[newMutField] = newMutator[newMutField];
+          }
+        }
+      }
     } catch (e) {
       if (async) return callback.call(this, e)
       throw e
